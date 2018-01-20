@@ -358,6 +358,11 @@ if ! [[ $(lsblk -n -d -o TYPE "${DEVICE}") =~ ^(disk|loop|lvm)$ ]]; then
     exit 1
 fi
 
+if [[ $(lsblk -n -d -o TYPE "${DEVICE}") =~ ^(loop|lvm)$ ]] && ! [[ "${DEVICE}" =~ ^/dev/mapper/ ]]; then
+    echo "$0: Target block device (${DEVICE}) should be accessed via /dev/mapper/ for loop and lvm devices." >&2
+    exit 1
+fi
+
 if [[ ! -w "${DEVICE}" ]]; then
     echo "$0: Target block device (${DEVICE}) is not writable (are you root?)" >&2
     exit 1
@@ -405,16 +410,29 @@ function write_to_disk() {
 
     dd bs=1M conv=nocreat of="${DEVICE}" status=none
 
-    # inform the OS of partition table changes
-    udevadm settle
-    local try
-    for try in 0 1 2 4; do
-        sleep "$try"  # Give the device a bit more time on each attempt.
-        blockdev --rereadpt "${DEVICE}" && unset try && break ||
-        echo "Failed to reread partitions on ${DEVICE}" >&2
-    done
-    [ -z "$try" ] || exit 1
-    udevadm settle
+    if [[ $(lsblk -n -d -o TYPE "${DEVICE}") =~ ^disk$ ]]; then
+        # inform the OS of partition table changes
+        udevadm settle
+        local try
+        for try in 0 1 2 4; do
+            sleep "$try"  # Give the device a bit more time on each attempt.
+            blockdev --rereadpt "${DEVICE}" && unset try && break ||
+            echo "Failed to reread partitions on ${DEVICE}" >&2
+        done
+        [ -z "$try" ] || exit 1
+        udevadm settle
+    else
+        if [[ -n "${CLOUDINIT}" ]] || [[ -n "${COPY_NET}" ]] || [[ -n "${IGNITION}" ]]; then
+            # try to add device mappings from the block device if kpartx is installed
+            if [[ ! -z "${KPARTX}" ]] && [[ -x "${KPARTX}" ]]; then
+                ${KPARTX} -as "${DEVICE}" > /dev/null 2>&1
+                USE_KPARTX=true
+            else
+                echo "${DEVICE} is not a disk. Please install kpartx for this script to be able to mount partitions." >&2
+                exit 1
+            fi
+        fi
+    fi
 }
 
 function install_from_file() {
@@ -550,6 +568,8 @@ function write_ignition() if [[ -n "${IGNITION}" ]]; then
 fi
 
 WORKDIR=$(mktemp --tmpdir -d coreos-install.XXXXXXXXXX)
+USE_KPARTX=false
+KPARTX=`which kpartx` || true
 trap 'error_output ; is_modified && wipefs --all --backup "${DEVICE}" ; rm -rf "${WORKDIR}"' EXIT
 
 if [ -n "${IMAGE_FILE}" ]; then
@@ -560,6 +580,10 @@ fi
 wait_for_disk
 write_cloudinit
 write_ignition
+
+if ${USE_KPARTX} ; then
+    ${KPARTX} -d "${DEVICE}" > /dev/null 2>&1
+fi
 
 rm -rf "${WORKDIR}"
 trap - EXIT
