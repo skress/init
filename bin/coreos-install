@@ -426,7 +426,7 @@ function write_to_disk() {
             # try to add device mappings from the block device if kpartx is installed
             if [[ ! -z "${KPARTX}" ]] && [[ -x "${KPARTX}" ]]; then
                 ${KPARTX} -as "${DEVICE}" > /dev/null 2>&1
-                USE_KPARTX=true
+                touch ${WORK_DIR}/use_kpartx
             else
                 echo "${DEVICE} is not a disk. Please install kpartx for this script to be able to mount partitions." >&2
                 exit 1
@@ -568,7 +568,6 @@ function write_ignition() if [[ -n "${IGNITION}" ]]; then
 fi
 
 WORKDIR=$(mktemp --tmpdir -d coreos-install.XXXXXXXXXX)
-USE_KPARTX=false
 KPARTX=`which kpartx` || true
 trap 'error_output ; is_modified && wipefs --all --backup "${DEVICE}" ; rm -rf "${WORKDIR}"' EXIT
 
@@ -581,7 +580,7 @@ wait_for_disk
 write_cloudinit
 write_ignition
 
-if ${USE_KPARTX} ; then
+if [ -f ${WORK_DIR}/use_kpartx ] ; then
     ${KPARTX} -d "${DEVICE}" > /dev/null 2>&1
 fi
 
